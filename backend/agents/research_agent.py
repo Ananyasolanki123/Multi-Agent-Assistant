@@ -1,33 +1,41 @@
 import os
 import fitz
+import io
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser, JsonOutputParser
 from langchain.chains.summarize import load_summarize_chain
 from langchain.chains import ConversationalRetrievalChain
-from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
 from docx import Document
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Define the Pydantic model for the output
 class Keywords(BaseModel):
-    """Keywords extracted from the document."""
+    """List of important Keywords extracted from the document."""
     keywords: List[str] = Field(..., description="List of important keywords and terms.")
+
+class ResearchQueryType(BaseModel):
+    """
+    Classifies the user's query intent. The LLM will use this to decide
+    which function to call (e.g., summary, Q&A, etc.).
+    """
+    category: Literal["summary", "keywords", "abstract", "question", "unknown"] = Field(
+        description="The type of query, based on the user's request."
+    )
 
 class ResearchAgent:
     """
-    Agent to handle research-based queries on PDF and DOCX documents.
-    It encapsulates the entire process from ingestion to query handling.
+    An intelligent agent for analyzing research papers.
+    It can ingest documents, summarize them, extract keywords, and answer questions.
     """
     def __init__(self):
-        """Initializes the LLM and empty data attributes."""
         self.llm = ChatGroq(
             groq_api_key=os.getenv("GROQ_API_KEY"),
             model_name="llama-3.1-8b-instant",
@@ -42,11 +50,11 @@ class ResearchAgent:
 
         self.full_text = ""
         self.docs = []
-
-    def ingest_document(self, file_path: str, file_type: str) -> str:
+    
+    def ingest_document(self, file_path: str, file_type: str) -> Dict[str, str]:
         """
-        Ingests a PDF or DOCX file, splits it into chunks, and stores embeddings
-        in a vector database for later retrieval.
+        Loads a PDF or DOCX file, splits it into manageable chunks, and
+        stores the embeddings in a Chroma vector database.
         """
         try:
             full_text = ""
@@ -59,110 +67,125 @@ class ResearchAgent:
                 doc = Document(file_path)
                 full_text = "\n".join([para.text for para in doc.paragraphs])
             else:
-                return "Unsupported file type. Please upload a PDF or DOCX file."
-
+                return {"type": "text", "message": "Unsupported file type. Please upload a PDF or DOCX file."}
             if not full_text:
-                return "The document is empty or could not be read."
-
+                return {"type": "text", "message": "The document is empty or could not be read."}
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
             self.docs = text_splitter.create_documents([full_text])
             self.full_text = full_text
-
             embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
             self.vector_db = Chroma.from_documents(
                 documents=self.docs,
                 embedding=embeddings_model,
-                persist_directory="backend/vector_store"   # ✅ persistence
+                persist_directory="backend/vector_store"
             )
             self.vector_db.persist()
-
-            
-            return "Document ingested and ready for analysis."
-
+            return {"type": "text", "message": "Document ingested and ready for analysis."}
         except Exception as e:
             print(f"Error during document ingestion: {e}")
-            return f"Error ingesting the document: {e}"
+            return {"type": "text", "message": f"Error ingesting the document: {e}"}
 
-    def handle_query(self, query: str) -> str:
+    def handle_query(self, query: str) -> Dict[str, str]:
+        """
+        Routes the user's query to the correct handler function based on its intent.
+        It's essentially a smart router powered by an LLM.
+        """
         if not self.vector_db:
-            return "No document has been ingested. Please upload a PDF or DOCX file first."
+            return {"type": "text", "message": "No document has been ingested. Please upload a PDF or DOCX file first."}
+        parser = PydanticOutputParser(pydantic_object=ResearchQueryType)
+        prompt_template = PromptTemplate(
+            template="""
+            Your sole purpose is to classify a user's query for a research agent.
+            The user wants to analyze a research document, and your job is to determine their intent.
+            Be lenient and flexible in your classification. For example, if the user asks for a "sumary" or "summry," classify it as 'summary'.
 
-        query_lower = query.lower()
-
-        if "summarize" in query_lower:
-            return self.summarize_paper()
-        elif "keywords" in query_lower:
-            keywords_list = self.extract_info("keywords")
-            return ", ".join(keywords_list)
-        elif "abstract" in query_lower:
-            return self.summarize_abstract()
-        elif "question" in query_lower or "?" in query_lower:
-            return self.answer_question(query)
-        else:
-            return "Research Agent is ready, but could not determine a specific task from your query."
-
-
-    def summarize_paper(self) -> dict:
-        """Summarizes the paper using the map_reduce chain for long documents."""
-        map_prompt_template = """
-        The following is a part of a document:
-        "{text}"
-        Based on this part, write a concise summary.
-        Summary:
-        """
-        map_prompt = PromptTemplate(template=map_prompt_template, input_variables=["text"])
-
-        combine_prompt_template = """
-        You are an expert summarizer. Take the following summaries from different sections
-        of a document and combine them into a single, cohesive, final summary. The final summary
-        should be simple enough to be clearly understandable by anyone.
-
-        Summaries:
-        "{text}"
-        
-        Final Summary:
-        """
-        combine_prompt = PromptTemplate(template=combine_prompt_template, input_variables=["text"])
-
-        chain = load_summarize_chain(
-            self.llm,
-            chain_type="map_reduce",
-            map_prompt=map_prompt,
-            combine_prompt=combine_prompt
+            Classify the user's query into one of the following categories:
+            - 'summary': If the query asks to summarize the entire document. Keywords include: "summary", "summarize", "overview", "main points", "short version", "gist","conclusion".
+            - 'abstract': If the query specifically asks for the abstract. Keywords include: "abstract", "paper abstract", "what is the abstract".
+            - 'keywords': If the query asks for keywords or key terms. Keywords include: "keywords", "key terms", "important words".
+            - 'question': If the query is a question to be answered from the document. This category should be a fallback if none of the others match.
+            - 'unknown': If the query is completely unrelated to the document.
+            
+            {format_instructions}
+            
+            User query: {query}
+            """,
+            input_variables=["query"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
         )
-        summary = chain.invoke({"input_documents": self.docs})["output_text"]
-        return summary   # ✅ plain string
+        chain = prompt_template | self.llm | parser
+        try:
+            query_type = chain.invoke({"query": query})
+            if query_type.category == "summary":
+                response = self.summarize_paper()
+            elif query_type.category == "keywords":
+                response = self.extract_info("keywords")
+            elif query_type.category == "abstract":
+                response = self.summarize_abstract()
+            elif query_type.category == "question":
+                response = self.answer_question(query)
+            else:
+                response = {"type": "text", "message": "Research Agent is ready, but could not determine a specific task from your query."}
+            if not isinstance(response, dict) or 'message' not in response:
+                response = {"type": "text", "message": "An error occurred while processing your request. Please try again."}
+            return response      
+        except Exception as e:
+            print(f"Error classifying research query: {e}")
+            return {"type": "text", "message": "An error occurred while processing your request. Please try again."}
 
-    def summarize_abstract(self) -> dict:
-        """Summarizes the abstract section of the document."""
+    def summarize_paper(self) -> Dict[str, str]:
+        if not self.full_text and self.vector_db:
+            all_documents = self.vector_db.get(include=['metadatas', 'documents'])
+            self.docs = [doc for doc in all_documents['documents']]
+            self.full_text = "\n".join(self.docs)
+        if not self.full_text:
+            return {"type": "text", "message": "No document content available for summarization."}
+        # Use of simpler, direct prompt for summarization
+        summary_prompt_template = ChatPromptTemplate.from_messages([
+            ("system", "You are an expert at summarizing research papers. Your task is to provide a comprehensive, clear, and concise summary of the following document. Focus on the main arguments, key findings, and conclusions. The summary should be easy to understand for a non-expert."),
+            ("human", "Document: {document_content}")
+        ])
+        chain = summary_prompt_template | self.llm
+        result = chain.invoke({"document_content": self.full_text})
+        return {"type": "text", "message": result.content}
+
+    def summarize_abstract(self) -> Dict[str, str]:
+        if not self.full_text and self.vector_db:
+            all_documents = self.vector_db.get(include=['metadatas', 'documents'])
+            self.docs = [doc for doc in all_documents['documents']]
+            self.full_text = "\n".join(self.docs)
+        if not self.full_text:
+            return {"type": "text", "message": "No document content available for summarization."}
         abstract_prompt = ChatPromptTemplate.from_messages([
             ("system", "You are an expert summarizer. Provide a detailed summary of the abstract of the following text."),
             ("human", "Text: {text}")
         ])
-        
         chain = abstract_prompt | self.llm
-        # Use the first chunk of the document, which typically contains the abstract
-        result = chain.invoke({"text": self.docs[0].page_content})
-        return result.content   # ✅ plain string
+        result = chain.invoke({"text": self.docs[0]})
+        return {"type": "text", "message": result.content}
 
-
-
-    def extract_info(self, info_type: str) -> list:
-        """Extracts keywords or other information using a structured output format."""
+    def extract_info(self, info_type: str) -> Dict[str, str]:
+        if not self.full_text and self.vector_db:
+            all_documents = self.vector_db.get(include=['metadatas', 'documents'])
+            self.docs = [doc for doc in all_documents['documents']]
+            self.full_text = "\n".join(self.docs)   
+        parser = PydanticOutputParser(pydantic_object=Keywords)
         extraction_prompt_template = """
         From the following text, extract {info_type}.
+        {format_instructions}
         Text: {text}
         """
-        extraction_prompt = PromptTemplate(template=extraction_prompt_template, input_variables=["text", "info_type"])
-        
-        structured_llm = self.llm.with_structured_output(Keywords)
-        extraction_chain = extraction_prompt | structured_llm
-        
-        # Use a subset of the documents to generate keywords to improve efficiency
+        extraction_prompt = PromptTemplate(
+            template=extraction_prompt_template, 
+            input_variables=["text", "info_type"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+        extraction_chain = extraction_prompt | self.llm | parser
         result = extraction_chain.invoke({"text": self.full_text[:4000], "info_type": info_type})
-        return result.keywords
+        keywords_str = ", ".join(result.keywords)
+        return {"type": "text", "message": keywords_str}
 
-    def answer_question(self, question: str) -> dict:
+    def answer_question(self, question: str) -> Dict[str, str]:
         """Answers a question using a retrieval chain and the vector database."""
         qa_chain = ConversationalRetrievalChain.from_llm(
             llm=self.llm,
@@ -171,4 +194,4 @@ class ResearchAgent:
         )
         
         result = qa_chain.invoke({"question": question, "chat_history": []})
-        return result["answer"]   # ✅ plain string
+        return {"type": "text", "message": result["answer"]}
