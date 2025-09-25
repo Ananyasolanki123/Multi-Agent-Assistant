@@ -1,6 +1,7 @@
 import os
 import shutil
 import uuid
+import mimetypes
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -39,6 +40,8 @@ current_agent_type = None
 
 class QueryPayload(BaseModel):
     query: str
+    file_name: str  # ✅ new field
+
 
 @app.post("/upload_file")
 async def upload_file(file: UploadFile = File(...)):
@@ -60,17 +63,22 @@ async def upload_file(file: UploadFile = File(...)):
         if file_ext in ["csv", "xlsx"]:
             data_agent.load_data(file_path, file_ext, file.filename)
             current_agent_type = "data"
-            return {"status": f"Data file '{file.filename}' processed successfully."}
+            return {"status": f"Data file '{file.filename}' processed successfully.", "file_name": file.filename}
+
 
         elif file_ext in ["pdf", "docx"]:
             status = research_agent.ingest_document(file_path, file_ext)
             current_agent_type = "research"
-            return {"status": f"Research file '{file.filename}' processed successfully.", "details": status}
+            return {"status": f"Research file '{file.filename}' processed successfully.", "file_name": file.filename}
+
 
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
+    finally:
+        # ✅ Cleanup: Delete the temporary file after ingestion, regardless of success or failure
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-  
 
 @app.post("/analyze_query")
 async def analyze_query(payload: QueryPayload):
@@ -83,19 +91,15 @@ async def analyze_query(payload: QueryPayload):
     if not current_agent_type:
         raise HTTPException(status_code=400, detail="No file uploaded. Please upload a file first.")
 
-    destination = orchestrator.route_query(payload.query)
+    file_name = payload.file_name  # ✅ get file_name from frontend
+    query = payload.query
+    destination = orchestrator.route_query(query)
+
 
     if destination == "data":
-        if current_agent_type != "data":
-            raise HTTPException(status_code=400, detail="Uploaded file is not a data file. Upload CSV/XLSX.")
-        response = data_agent.handle_query(payload.query)
+        response = data_agent.handle_query(query)
         return {"agent": "data", "response": response}
 
     elif destination == "research":
-        if current_agent_type != "research":
-            raise HTTPException(status_code=400, detail="Uploaded file is not a research file. Upload PDF/DOCX.")
-        response = research_agent.handle_query(payload.query)
+        response = research_agent.handle_query(query)
         return {"agent": "research", "response": response}
-
-    else:
-        raise HTTPException(status_code=400, detail="Unable to classify query type.")
