@@ -1,0 +1,47 @@
+Use version 3.8 of the Docker Compose file format.
+version: '3.8'
+
+Define the individual services that make up the application.
+services:
+
+The backend service, which runs the AI agents.
+  backend:
+# Build the Docker image using the Dockerfile located in the backend folder.
+      build:
+            context: ./backend
+            dockerfile: Dockerfile
+# Map port 8000 on the host machine to port 8000 in the container,
+# so the frontend can easily connect to the backend's API.
+      ports:
+            - "8000:8000"
+# Mount the local backend directory into the container. This makes it
+# easy to see any code changes without rebuilding the image.
+      volumes:
+            - ./backend:/app
+# Pass the GROQ_API_KEY as a secret to the container.
+      secrets:
+            - GROQ_API_KEY
+
+The frontend service, which runs the Streamlit application.
+  frontend:
+# Build the Docker image from the Dockerfile in the frontend folder.
+      build:
+            context: ./frontend
+            dockerfile: Dockerfile
+# Map port 8501 on the host to the container, which is the default for Streamlit.
+      ports:
+            - "8501:8501"
+# Mount the local frontend directory into the container for a smoother
+# development experience.
+      volumes:
+            - ./frontend:/app
+# Ensure the backend service is up and running before trying to start
+# the frontend, as the frontend depends on the backend.
+      depends_on:
+            - backend
+
+Define the secret for the GROQ_API_KEY.
+secrets:
+  GROQ_API_KEY:
+# This assumes your API key is in a file named .env
+      file: ./.env
