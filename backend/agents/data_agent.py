@@ -230,11 +230,10 @@ class DataIntelligenceAgent:
                     result = self.df[column_to_query].count()
                 
                 return {
-                    "type": "text",
-                    "message": f"The {operation} of {column_to_query} is: {result}"
+                    f"The {operation} of {column_to_query} is: {result}"
                 }
             except Exception as e:
-                return {"type": "text", "message": f"An error occurred while performing the numerical operation: {e}"}
+                return {f"An error occurred while performing the numerical operation: {e}"}
 
         elif query_info.query_type == 'categorical':
             column_to_query = self._find_column(query_info.column)
@@ -245,19 +244,16 @@ class DataIntelligenceAgent:
                 unique_values = self.df[column_to_query].unique().tolist()
                 count_unique = len(unique_values)
                 return {
-                    "type": "text",
-                    "message": f"The column '{column_to_query}' has {count_unique} unique values: {', '.join(unique_values)}"
+                    f"The column '{column_to_query}' has {count_unique} unique values: {', '.join(unique_values)}"
                 }
             except Exception as e:
-                return {"type": "text", "message": f"An error occurred while processing the categorical query: {e}"}
+                return {f"An error occurred while processing the categorical query: {e}"}
 
         else: # General query type
             prompt = self._create_llm_prompt(user_query)
             llm_response = self.llm.invoke(prompt)
-            return {
-                "type": "text",
-                "message": llm_response.content
-            }
+            return llm_response.content.strip()
+
 
     def _create_llm_prompt(self, user_query: str) -> str:
         """
@@ -320,8 +316,7 @@ class DataIntelligenceAgent:
             
             if plot_info.error:
                 return {
-                    "type": "text",
-                    "message": plot_info.error
+                    plot_info.error
                 }
             
             x_col_llm = plot_info.x_axis
@@ -335,8 +330,7 @@ class DataIntelligenceAgent:
             # Verify normalized columns exist
             if x_col is None or (y_col_llm and y_col is None):
                 return {
-                    "type": "text",
-                    "message": f"Could not find the requested columns ({x_col_llm}, {y_col_llm}) in the data."
+                    f"Could not find the requested columns ({x_col_llm}, {y_col_llm}) in the data."
                 }
 
             df_to_plot = self.df.copy()
@@ -380,21 +374,16 @@ class DataIntelligenceAgent:
                                          labels={x_col: x_col.capitalize()})
             else:
                 return {
-                    "type": "text",
-                    "message": f"Unsupported plot type: {plot_type}. Please try again."
+                     f"Unsupported plot type: {plot_type}. Please try again."
                 }
             
             # Return the plot as a JSON object, which can be rendered by a frontend
-            return {
-                "type": "plot",
-                "message": f"Here is an interactive plot of the {x_col} and {y_col} data.",
-                "data": fig.to_json()
-            }
+            return {"plot": fig.to_json(), "caption": f"Here is an interactive plot of {x_col} and {y_col}."}
+
 
         except Exception as e:
             return {
-                "type": "text",
-                "message": f"An error occurred while generating the chart: {e}"
+                 f"An error occurred while generating the chart: {e}"
             }
 
     def _find_column(self, name: str) -> Optional[str]:
