@@ -1,0 +1,167 @@
+
+import pandas as pd
+import io
+import matplotlib.pyplot as plt
+import re
+from typing import Dict, Any
+
+class DataIntelligenceAgent:
+    """
+    Agent to handle data queries on CSV/Excel files with intelligent data cleaning.
+    """
+
+    def __init__(self):
+        self.df = None
+        self.original_file_name = None
+
+    def load_data(self, file_path: str, file_type: str, file_name: str) -> str:
+        """
+        Loads, cleans, and stores a CSV or Excel file.
+        
+        Args:
+            file_path: The path to the uploaded file.
+            file_type: The type of file ('csv' or 'excel').
+            file_name: The original name of the uploaded file.
+        """
+        self.original_file_name = file_name
+        try:
+            if file_type == 'csv':
+                self.df = pd.read_csv(file_path)
+            elif file_type == 'excel':
+                self.df = pd.read_excel(file_path)
+            else:
+                return "Unsupported file type. Please upload a CSV or Excel file."
+            
+            # Perform intelligent data cleaning
+            self.df = self._clean_data(self.df)
+            
+            # Save the cleaned data to the /data directory
+            self._save_cleaned_data()
+            
+            return "File loaded and cleaned successfully. The cleaned DataFrame is ready for analysis and has been stored in the /data directory."
+        except Exception as e:
+            return f"Error loading or cleaning file: {e}"
+
+    def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Performs a series of cleaning operations on the DataFrame, handling missing
+        values without dropping important data.
+        
+        This includes:
+        - Imputing missing numeric values with the column mean.
+        - Filling missing categorical values with a placeholder.
+        - Converting text to lowercase for consistency.
+        - Removing emojis from text columns.
+        """
+        # 1. Impute missing numeric values
+        for col in df.select_dtypes(include=['number']).columns:
+            df[col].fillna(df[col].mean(), inplace=True)
+            
+        # 2. Fill missing categorical/object values with a placeholder
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col].fillna('unknown', inplace=True)
+            
+        # 3. Clean string columns (e.g., lowercase and remove emojis)
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.lower()
+                # Remove emojis using a regex
+                emoji_pattern = re.compile("["
+                                        "\U0001F600-\U0001F64F"  # emoticons
+                                        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+                                        "\U0001F680-\U0001F6FF"  # transport & map symbols
+                                        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                                        "]+", flags=re.UNICODE)
+                df[col] = df[col].apply(lambda x: emoji_pattern.sub(r'', x))
+        
+        return df
+
+    def _save_cleaned_data(self):
+        """
+        Saves the cleaned DataFrame to a new CSV file in the /data directory.
+        """
+        cleaned_file_name = f"cleaned_{self.original_file_name.rsplit('.', 1)[0]}.csv"
+        save_path = f"data/{cleaned_file_name}"
+        self.df.to_csv(save_path, index=False)
+        print(f"Cleaned data saved to {save_path}")
+
+    def handle_query(self, query: str) -> Dict[str, Any]:
+        """
+        Processes a natural language query and performs the corresponding data task.
+        
+        This method remains the same as in the previous example, as its logic
+        operates on the now-cleaned DataFrame.
+        """
+        if self.df is None:
+            return {
+                "type": "text",
+                "message": "No data has been loaded. Please upload a file first."
+            }
+
+        query_lower = query.lower()
+
+        if "sales" in query_lower and "total" in query_lower:
+            return self._get_total_sales()
+        
+        if "plot" in query_lower or "chart" in query_lower:
+            return self._generate_simple_plot()
+        
+        return {
+            "type": "text",
+            "message": "I'm sorry, I can only handle simple total sales and plotting queries at the moment. Please try a different question."
+        }
+
+    def _get_total_sales(self) -> Dict[str, Any]:
+        """Calculates the total sales from the DataFrame."""
+        if 'sales' not in self.df.columns:
+            return {
+                "type": "text",
+                "message": "The 'sales' column was not found after cleaning. Please check your data."
+            }
+        
+        total_sales = self.df['sales'].sum()
+        return {
+            "type": "text",
+            "message": f"The total sales are: {total_sales:,.2f}"
+        }
+
+    def _generate_simple_plot(self) -> Dict[str, Any]:
+        """Generates a simple line plot of sales over time and returns it as a PNG image."""
+        if 'date' not in self.df.columns or 'sales' not in self.df.columns:
+            return {
+                "type": "text",
+                "message": "The 'date' or 'sales' columns were not found after cleaning. Please check your data."
+            }
+
+        try:
+            # Ensure 'Date' column is in datetime format
+            self.df['date'] = pd.to_datetime(self.df['date'])
+            
+            # Group by date and sum sales
+            sales_by_date = self.df.groupby('date')['sales'].sum()
+            
+            # Create the plot
+            plt.figure(figsize=(10, 6))
+            sales_by_date.plot(kind='line')
+            plt.title('Sales Trends Over Time')
+            plt.xlabel('Date')
+            plt.ylabel('Total Sales')
+            plt.grid(True)
+            plt.tight_layout()
+
+            # Save the plot to an in-memory buffer
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png')
+            buf.seek(0)
+            plt.close()
+
+            return {
+                "type": "image",
+                "message": "Here is a plot of the sales trends.",
+                "data": buf.getvalue()
+            }
+        except Exception as e:
+            return {
+                "type": "text",
+                "message": f"An error occurred while generating the chart: {e}"
+            }
