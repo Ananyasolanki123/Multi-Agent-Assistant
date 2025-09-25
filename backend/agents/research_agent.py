@@ -34,6 +34,12 @@ class ResearchAgent:
             temperature=0
         )
         self.vector_db = None
+        if os.path.exists("backend/vector_store"):
+            self.vector_db = Chroma(
+                embedding_function=HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2"),
+                persist_directory="backend/vector_store"
+            )
+
         self.full_text = ""
         self.docs = []
 
@@ -63,7 +69,13 @@ class ResearchAgent:
             self.full_text = full_text
 
             embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-            self.vector_db = Chroma.from_documents(documents=self.docs, embedding=embeddings_model)
+            self.vector_db = Chroma.from_documents(
+                documents=self.docs,
+                embedding=embeddings_model,
+                persist_directory="backend/vector_store"   # ✅ persistence
+            )
+            self.vector_db.persist()
+
             
             return "Document ingested and ready for analysis."
 
@@ -71,37 +83,24 @@ class ResearchAgent:
             print(f"Error during document ingestion: {e}")
             return f"Error ingesting the document: {e}"
 
-    def handle_query(self, query: str) -> Dict[str, Any]:
-        """
-        Determines the specific action based on the research query
-        and calls the appropriate method.
-        """
+    def handle_query(self, query: str) -> str:
         if not self.vector_db:
-            return {
-                "type": "text",
-                "message": "No document has been ingested. Please upload a PDF or DOCX file first."
-            }
+            return "No document has been ingested. Please upload a PDF or DOCX file first."
 
         query_lower = query.lower()
-        
+
         if "summarize" in query_lower:
             return self.summarize_paper()
         elif "keywords" in query_lower:
-            # Join the list of keywords into a single string for a clean response
             keywords_list = self.extract_info("keywords")
-            return {
-                "type": "text",
-                "message": ", ".join(keywords_list)
-            }
+            return ", ".join(keywords_list)
         elif "abstract" in query_lower:
             return self.summarize_abstract()
         elif "question" in query_lower or "?" in query_lower:
             return self.answer_question(query)
         else:
-            return {
-                "type": "text",
-                "message": "Research Agent is ready, but could not determine a specific task from your query."
-            }
+            return "Research Agent is ready, but could not determine a specific task from your query."
+
 
     def summarize_paper(self) -> dict:
         """Summarizes the paper using the map_reduce chain for long documents."""
@@ -132,10 +131,7 @@ class ResearchAgent:
             combine_prompt=combine_prompt
         )
         summary = chain.invoke({"input_documents": self.docs})["output_text"]
-        return {
-            "type": "text",
-            "message": summary
-        }
+        return summary   # ✅ plain string
 
     def summarize_abstract(self) -> dict:
         """Summarizes the abstract section of the document."""
@@ -147,10 +143,9 @@ class ResearchAgent:
         chain = abstract_prompt | self.llm
         # Use the first chunk of the document, which typically contains the abstract
         result = chain.invoke({"text": self.docs[0].page_content})
-        return {
-            "type": "text",
-            "message": result.content
-        }
+        return result.content   # ✅ plain string
+
+
 
     def extract_info(self, info_type: str) -> list:
         """Extracts keywords or other information using a structured output format."""
@@ -176,4 +171,4 @@ class ResearchAgent:
         )
         
         result = qa_chain.invoke({"question": question, "chat_history": []})
-        return {"type": "text", "message": result["answer"]}
+        return result["answer"]   # ✅ plain string
