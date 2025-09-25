@@ -1,11 +1,12 @@
 import os
-from typing import Literal
 from dotenv import load_dotenv
+from typing import Literal
+from pydantic import BaseModel, Field
 
 # LangChain + Groq
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from langchain.prompts import ChatPromptTemplate
+from langchain.output_parsers import PydanticOutputParser
 
 # Load environment variables
 load_dotenv()
@@ -38,32 +39,35 @@ class OrchestrationAgent:
     def __init__(self):
         # Initialize LLM
         self.llm = ChatGroq(
-            api_key=os.getenv("GROQ_API_KEY"),
-            model_name="llama-3.1-8b-instant",  # Fast & lightweight router
-            temperature=0  # Deterministic for consistent routing
+            groq_api_key=os.getenv("GROQ_API_KEY"),
+            model_name="llama-3.1-8b-instant",  # fast & lightweight router
+            temperature=0  # deterministic
         )
+
+        # Setup Pydantic parser
+        self.parser = PydanticOutputParser(pydantic_object=RouteQuery)
 
         # Router prompt
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", 
+            ("system",
              "You are a router. Classify a user's query as either 'research' or 'data'.\n"
              "- Use 'research' for document-based queries (e.g., summarize a paper, extract methods, generate keywords).\n"
              "- Use 'data' for dataset queries (e.g., analyze sales trends, calculate averages, plot a chart).\n"
-             "Return ONLY the classification in JSON format."),
+             "Return ONLY in JSON format that matches this schema:\n{format_instructions}"
+             ),
             ("human", "{query}")
-        ])
+        ]).partial(format_instructions=self.parser.get_format_instructions())
 
     def route_query(self, query: str) -> str:
         """
         Takes a user query string, runs it through the LLM router,
         and returns 'research' or 'data'.
         """
-        structured_llm = self.llm.with_structured_output(RouteQuery)
-        router_chain = self.prompt | structured_llm
+        chain = self.prompt | self.llm | self.parser
 
-        response: RouteQuery = router_chain.invoke({"query": query})
+        response: RouteQuery = chain.invoke({"query": query})
 
-        # Debugging logs (optional, can remove in prod)
+        # Debugging logs
         print(f"[OrchestrationAgent] Query: {query}")
         print(f"[OrchestrationAgent] Routed to: {response.destination}")
 
