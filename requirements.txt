@@ -1,0 +1,15 @@
+streamlit
+requests
+plotly
+fastapi
+pydantic
+python-dotenv
+PyMuPDF
+langchain
+langchain-huggingface
+langchain-community
+langchain-groq
+python-docx
+pandas
+SQLAlchemy
+chromadb
